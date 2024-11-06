@@ -3,7 +3,7 @@
 	url = https://github.com/VoodooI2C/VoodooGPIO.git
 [submodule "VoodooI2C Satellites/VoodooI2CHID"]
 	path = VoodooI2C Satellites/VoodooI2CHID
-	url = https://github.com/kevin8717/VoodooI2CHID-htix5288.git
+	url = https://github.com/VoodooI2C/VoodooI2CHID.git
 [submodule "VoodooI2C Satellites/VoodooI2CELAN"]
 	path = VoodooI2C Satellites/VoodooI2CELAN
 	url = https://github.com/VoodooI2C/VoodooI2CELAN.git
