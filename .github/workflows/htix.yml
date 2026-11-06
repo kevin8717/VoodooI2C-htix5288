@@ -1,0 +1,45 @@
+name: Build VoodooI2CHID
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout MacKernelSDK
+        uses: actions/checkout@v4
+        with:
+          repository: acidanthera/MacKernelSDK
+          path: MacKernelSDK
+
+      - name: VoodooInput Bootstrap
+        run: |
+          src=$(/usr/bin/curl -Lfs https://raw.githubusercontent.com/acidanthera/VoodooInput/master/VoodooInput/Scripts/bootstrap.sh) && eval "$src" && mv VoodooInput Dependencies
+
+      - name: Build
+        run: |
+          xcodebuild \
+            -project "VoodooI2C Satellites/VoodooI2CHID/VoodooI2CHID.xcodeproj" \
+            -scheme VoodooI2CHID \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Package
+        run: |
+          mkdir -p out
+          cp -R build/Build/Products/Release/VoodooI2CHID.kext out/
+          cd out && zip -r VoodooI2CHID.kext.zip VoodooI2CHID.kext
+          shasum -a 256 VoodooI2CHID.kext.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VoodooI2CHID
+          path: out/VoodooI2CHID.kext.zip
