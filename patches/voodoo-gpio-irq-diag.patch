@@ -1,5 +1,5 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..22d3374 100644
+index 9bbc313..b5b7925 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
 @@ -23,12 +23,16 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
@@ -23,7 +23,7 @@ index 9bbc313..22d3374 100644
  }
  
  void VoodooGPIOAMD::amd_gpio_irq_disable(unsigned pin) {
-@@ -74,33 +78,50 @@ void VoodooGPIOAMD::amd_gpio_irq_eoi() {
+@@ -74,33 +78,58 @@ void VoodooGPIOAMD::amd_gpio_irq_eoi() {
  int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
      int ret = 0;
  
@@ -48,12 +48,20 @@ index 9bbc313..22d3374 100644
 +     */
 +    UInt32 desired = pin_reg;
 +
++    /* Explicit 32-bit masks: the 0xUL literals are 64-bit, and
++     * ~(0x3UL << 9) promoted to 64-bit silently cleared the wrong bits. */
++    const UInt32 LEVEL_MASK32   = (UInt32)1U << LEVEL_TRIG_OFF;
++    const UInt32 ACTIVE_MASK32  = (UInt32)3U << ACTIVE_LEVEL_OFF;
++    const UInt32 DRV_MASK32     = (UInt32)3U << DRV_STRENGTH_SEL_OFF;
++    const UInt32 PULLUP_MASK32  = (UInt32)1U << PULL_UP_ENABLE_OFF;
++    const UInt32 PULLDN_MASK32  = (UInt32)1U << PULL_DOWN_ENABLE_OFF;
++
 +    /* clear the fields we are about to program */
-+    desired &= ~(BIT(LEVEL_TRIG_OFF));
-+    desired &= ~(ACTIVE_LEVEL_MASK << ACTIVE_LEVEL_OFF);
-+    desired &= ~(DRV_STRENGTH_SEL_MASK << DRV_STRENGTH_SEL_OFF);
-+    desired &= ~(BIT(PULL_UP_ENABLE_OFF));
-+    desired &= ~(BIT(PULL_DOWN_ENABLE_OFF));
++    desired &= ~LEVEL_MASK32;
++    desired &= ~ACTIVE_MASK32;
++    desired &= ~DRV_MASK32;
++    desired &= ~PULLUP_MASK32;
++    desired &= ~PULLDN_MASK32;
  
      switch (type & IRQ_TYPE_SENSE_MASK) {
      case IRQ_TYPE_EDGE_RISING:
@@ -90,7 +98,7 @@ index 9bbc313..22d3374 100644
          break;
      case IRQ_TYPE_NONE:
          break;
-@@ -109,8 +130,51 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
+@@ -109,8 +138,51 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
          ret = -1;
      }
  
@@ -103,12 +111,12 @@ index 9bbc313..22d3374 100644
 +     *   level trigger, active low, drive strength 2, pull-up enabled.
 +     */
 +    if (pin == 8) {
-+        desired |= BIT(LEVEL_TRIG_OFF);
-+        desired &= ~(ACTIVE_LEVEL_MASK << ACTIVE_LEVEL_OFF);
-+        desired |= ACTIVE_LOW << ACTIVE_LEVEL_OFF;
-+        desired |= (0x2UL << DRV_STRENGTH_SEL_OFF);
-+        desired |= BIT(PULL_UP_ENABLE_OFF);
-+        desired &= ~BIT(PULL_DOWN_ENABLE_OFF);
++        desired |= LEVEL_MASK32;
++        desired &= ~ACTIVE_MASK32;
++        desired |= (UInt32)1U << ACTIVE_LEVEL_OFF;
++        desired |= (UInt32)2U << DRV_STRENGTH_SEL_OFF;
++        desired |= PULLUP_MASK32;
++        desired &= ~PULLDN_MASK32;
 +    }
 +
 +    /* write-1-to-clear pending interrupt status */
@@ -144,7 +152,7 @@ index 9bbc313..22d3374 100644
  
      return ret;
  }
-@@ -123,6 +187,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -123,6 +195,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
      UInt32 regval;
      UInt64 status, mask;
  
@@ -153,7 +161,7 @@ index 9bbc313..22d3374 100644
      /* Read the wake status */
      status = readl(this->base + WAKE_INT_STATUS_REG1);
      status <<= 32;
-@@ -155,6 +221,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -155,6 +229,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
              if (pin >= this->npins)
                  break;
  
@@ -165,7 +173,7 @@ index 9bbc313..22d3374 100644
              if (OSObject *owner = this->pinInterruptActionOwners[pin])
                  this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
  
-@@ -226,7 +297,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -226,7 +305,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -227,7 +235,7 @@ index 9bbc313..22d3374 100644
  }
  
  /**
-@@ -338,7 +462,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +470,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -241,7 +249,7 @@ index 9bbc313..22d3374 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +566,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +574,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -257,7 +265,7 @@ index 9bbc313..22d3374 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +604,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +612,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
