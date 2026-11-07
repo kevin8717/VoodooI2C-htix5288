@@ -53,5 +53,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG=diag-latest
+          ASSET="VoodooI2C-diag-${{ github.run_number }}.kext.zip"
+          cp out/VoodooI2C-diag.kext.zip "out/$ASSET"
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "rolling diagnostic build"
-          gh release upload "$TAG" out/VoodooI2C-diag.kext.zip --clobber
+          gh release upload "$TAG" "out/$ASSET" --clobber
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"

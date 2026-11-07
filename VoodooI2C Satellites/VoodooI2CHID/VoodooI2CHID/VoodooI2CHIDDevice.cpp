@@ -613,11 +613,10 @@ bool VoodooI2CHIDDevice::handleStart(IOService* provider) {
         goto exit;
     }
 
-    bool force_polling = true; /* HTIX5288 diagnostic: force polling to separate device from GPIO path */
-    interrupt_source = force_polling ? NULL : IOInterruptEventSource::interruptEventSource(this, OSMemberFunctionCast(IOInterruptEventAction, this, &VoodooI2CHIDDevice::interruptOccured), api, 0);
-    if (force_polling) {
-        IOLog("%s::%s Forced polling for HTIX5288 diagnosis", getName(), name);
-    }
+    /* HTIX5288 diagnostic: force polling to separate device from GPIO path.
+     * Declared before the gotos above to keep C++ jump rules satisfied. */
+    interrupt_source = NULL;
+    IOLog("%s::%s Forced polling for HTIX5288 diagnosis", getName(), name);
     if (interrupt_source) {
         work_loop->addEventSource(interrupt_source);
     } else {
