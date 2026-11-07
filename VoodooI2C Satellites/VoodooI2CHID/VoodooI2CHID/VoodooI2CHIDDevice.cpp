@@ -124,6 +124,19 @@ static int g_last_io_ret = 0;
 static int g_last_report_len = 0;
 static UInt8 g_last_head[8] = {0};
 
+/* Read-only reset-path diagnostics for HTIX5288 bring-up. */
+static UInt64 g_reset_enter_calls = 0;
+static UInt64 g_pre_on_calls = 0;
+static UInt64 g_reset_write_calls = 0;
+static UInt64 g_reset_wait_calls = 0;
+static UInt64 g_reset_timeout_calls = 0;
+static UInt64 g_reset_awake_calls = 0;
+static UInt64 g_post_on_calls = 0;
+static int g_pre_on_ret = 0;
+static int g_reset_write_ret = 0;
+static int g_reset_wait_ret = 0;
+static int g_post_on_ret = 0;
+
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
     IOReturn ret;
@@ -301,14 +314,25 @@ IOReturn VoodooI2CHIDDevice::resetHIDDevice() {
 }
 
 IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
-    setHIDPowerState(kVoodooI2CStateOn);
+    g_reset_enter_calls++;
+    setProperty("PhxResetEnterCalls", g_reset_enter_calls, 64);
+
+    IOReturn pre_on_ret = setHIDPowerState(kVoodooI2CStateOn);
+    g_pre_on_calls++;
+    g_pre_on_ret = (int)pre_on_ret;
+    setProperty("PhxPreOnCalls", g_pre_on_calls, 64);
+    setProperty("PhxPreOnRet", (UInt32)g_pre_on_ret, 32);
 
     VoodooI2CHIDDeviceCommand command;
     command.c.reg = hid_descriptor.wCommandRegister;
     command.c.opcode = 0x01;
     command.c.report_type_id = 0;
 
-    api->writeI2C(command.data, 4);
+    IOReturn reset_write_ret = api->writeI2C(command.data, 4);
+    g_reset_write_calls++;
+    g_reset_write_ret = (int)reset_write_ret;
+    setProperty("PhxResetWriteCalls", g_reset_write_calls, 64);
+    setProperty("PhxResetWriteRet", (UInt32)g_reset_write_ret, 32);
 
     if (quirks & I2C_HID_QUIRK_NO_IRQ_AFTER_RESET) {
         IOSleep(100);
@@ -320,18 +344,31 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
         clock_absolutetime_interval_to_deadline(absolute_time, &deadline);
 
         IOReturn sleep = command_gate->commandSleep(&reset_event, deadline, THREAD_UNINT);
+        g_reset_wait_calls++;
+        g_reset_wait_ret = (int)sleep;
+        setProperty("PhxResetWaitCalls", g_reset_wait_calls, 64);
+        setProperty("PhxResetWaitRet", (UInt32)g_reset_wait_ret, 32);
 
         if (sleep == THREAD_TIMED_OUT) {
+            g_reset_timeout_calls++;
+            setProperty("PhxResetTimeoutCalls", g_reset_timeout_calls, 64);
+            setProperty("PhxPostOnCalls", g_post_on_calls, 64);
             IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
             return kIOReturnTimeout;
         } else if (sleep == THREAD_AWAKENED) {
+            g_reset_awake_calls++;
+            setProperty("PhxResetAwakeCalls", g_reset_awake_calls, 64);
             IOLog("%s::%s Device initiated reset accomplished\n", getName(), name);
         }
     }
 
     /* Linux i2c-hid re-sends SET_POWER(ON) after RESET completes.
      * Hantick HTIX5288 does not reliably resume reporting without it. */
-    setHIDPowerState(kVoodooI2CStateOn);
+    IOReturn post_on_ret = setHIDPowerState(kVoodooI2CStateOn);
+    g_post_on_calls++;
+    g_post_on_ret = (int)post_on_ret;
+    setProperty("PhxPostOnCalls", g_post_on_calls, 64);
+    setProperty("PhxPostOnRet", (UInt32)g_post_on_ret, 32);
 
     return kIOReturnSuccess;
 }
