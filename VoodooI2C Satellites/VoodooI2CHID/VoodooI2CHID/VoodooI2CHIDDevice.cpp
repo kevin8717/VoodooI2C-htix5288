@@ -119,14 +119,30 @@ IOReturn VoodooI2CHIDDevice::getHIDDescriptorAddress() {
     return ret;
 }
 
+static UInt64 g_input_calls = 0;
+static int g_last_io_ret = 0;
+static int g_last_report_len = 0;
+static UInt8 g_last_head[8] = {0};
+
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
     IOReturn ret;
     unsigned char* report = (unsigned char *)IOMalloc(hid_descriptor.wMaxInputLength);
 
-    api->readI2C(report, hid_descriptor.wMaxInputLength);
+    IOReturn io_ret = api->readI2C(report, hid_descriptor.wMaxInputLength);
 
     int return_size = report[0] | report[1] << 8;
+
+    /* Read-only diagnostics for HTIX5288 bring-up. */
+    g_input_calls++;
+    g_last_io_ret = (int)io_ret;
+    g_last_report_len = return_size;
+    for (int di = 0; di < 8; di++)
+        g_last_head[di] = report[di];
+    setProperty("PhxInputCalls", g_input_calls, 64);
+    setProperty("PhxLastIoRet", (UInt32)g_last_io_ret, 32);
+    setProperty("PhxLastReportLen", (UInt32)g_last_report_len, 32);
+    setProperty("PhxLastHead", g_last_head, 8);
 
     if (!return_size) {
         // IOLog("%s::%s Device sent a 0-length report\n", getName(), name);
