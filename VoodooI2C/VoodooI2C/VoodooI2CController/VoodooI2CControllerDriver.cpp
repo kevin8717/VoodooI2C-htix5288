@@ -666,8 +666,14 @@ IOReturn VoodooI2CControllerDriver::toggleBusState(VoodooI2CState enabled) {
 }
 
 inline void VoodooI2CControllerDriver::toggleClockGating(VoodooI2CState enabled) {
+    /*
+     * LPSS_PRIVATE_CLOCK_GATING (0x800) is an Intel LPSS private register.
+     * On AMD DesignWare controllers this offset is not a clock-gating
+     * control; writing it after every transfer corrupts controller state.
+     * Linux i2c-designware never touches it. Only apply on Intel LPSS.
+     */
     const char *name = nub->controller->physical_device.name;
-    if (name[0] == 'A' && name[1] == 'M' && name[2] == 'D') {
+    if (!strncmp(name, "INT", 3)) {
         writeRegister(enabled, LPSS_PRIVATE_CLOCK_GATING);
     }
 }
