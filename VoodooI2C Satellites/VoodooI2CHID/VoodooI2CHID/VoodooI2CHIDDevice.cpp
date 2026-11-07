@@ -654,6 +654,21 @@ IOReturn VoodooI2CHIDDevice::setReport(IOMemoryDescriptor* report, IOHIDReportTy
 
     memcpy(raw_command + length, arguments, arguments_length);
     length += arguments_length;
+
+    /* Read-only diagnostic: publish the exact SET_REPORT wire bytes so the
+     * macOS transaction can be compared byte-for-byte with Linux's
+     * 22-00-37-03-23-00-04-00-07-01. */
+    if (reportType == kIOHIDReportTypeFeature && report_id <= 0x0F) {
+        UInt8 wire[16] = {0};
+        unsigned n = length < sizeof(wire) ? length : sizeof(wire);
+        memcpy(wire, raw_command, n);
+        if (report_id == 5) setProperty("PhxSetRep05", wire, n);
+        if (report_id == 6) setProperty("PhxSetRep06", wire, n);
+        if (report_id == 7) setProperty("PhxSetRep07", wire, n);
+        setProperty("PhxSetRepLen", (UInt32)length, 32);
+        setProperty("PhxSetRepLastId", (UInt32)report_id, 32);
+    }
+
     IOReturn ret = api->writeI2C(raw_command, length);
     IOSleep(10);
     IOFree(command, 4+arguments_length);
