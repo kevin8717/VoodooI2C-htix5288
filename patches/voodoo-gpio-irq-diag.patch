@@ -1,5 +1,5 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..98a37a5 100644
+index 9bbc313..5face23 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
 @@ -23,12 +23,16 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
@@ -232,7 +232,7 @@ index 9bbc313..98a37a5 100644
      /* did not cause wake on resume context for shared IRQ */
      if (irq < 0)
          return false;
-@@ -226,7 +348,61 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -226,7 +348,82 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -251,12 +251,28 @@ index 9bbc313..98a37a5 100644
 +
 +void VoodooGPIOAMD::diagTimerAction(OSObject *owner, IOTimerEventSource *sender) {
 +    if (sender)
-+        sender->setTimeoutMS(1000);
++        sender->setTimeoutMS(2);
 +
 +    if (!this->base)
 +        return;
 +
 +    UInt32 pin8 = readl(this->base + 8 * 4);
++
++    /* Millisecond-level pin8 sampling: a 1 Hz timer cannot see the
++     * ~ms-wide level pulse. Track whether bit28 (INT_STS) and bit16
++     * (PIN_STS low) are ever observed. */
++    if ((pin8 & BIT(INTERRUPT_STS_OFF)) && !(pin8 & BIT(PIN_STS_OFF))) {
++        this->diagPin8LowSamples++;
++        if (!this->diagPin8Before)
++            this->diagPin8Before = pin8;
++    }
++    if (!(pin8 & BIT(PIN_STS_OFF)))
++        this->diagPin8StsLow++;
++    if (pin8 != this->diagPin8Last)
++        this->diagPin8Changes++;
++    this->diagPin8Last = pin8;
++    if ((pin8 & BIT(INTERRUPT_STS_OFF)) && pin8 < this->diagPin8Min)
++        this->diagPin8Min = pin8;
 +
 +    setProperty("PhxGpioDiagVersion", (UInt32)1, 32);
 +    setProperty("PhxGpioIrqCount", (UInt32)this->diagIrqCount, 32);
@@ -292,10 +308,15 @@ index 9bbc313..98a37a5 100644
 +    setProperty("PhxGpioPin8After1ms", (UInt32)this->diagPin8After1ms, 32);
 +    setProperty("PhxGpioPin8After10ms", (UInt32)this->diagPin8After10ms, 32);
 +    setProperty("PhxGpioPin8After100ms", (UInt32)this->diagPin8After100ms, 32);
++    setProperty("PhxGpioPin8LowSamples", (UInt32)this->diagPin8LowSamples, 32);
++    setProperty("PhxGpioPin8StsLow", (UInt32)this->diagPin8StsLow, 32);
++    setProperty("PhxGpioPin8Changes", (UInt32)this->diagPin8Changes, 32);
++    setProperty("PhxGpioPin8Last", (UInt32)this->diagPin8Last, 32);
++    setProperty("PhxGpioPin8Min", (UInt32)this->diagPin8Min, 32);
  }
  
  /**
-@@ -338,7 +514,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +535,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -309,7 +330,7 @@ index 9bbc313..98a37a5 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +618,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +639,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -325,7 +346,7 @@ index 9bbc313..98a37a5 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +656,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +677,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
@@ -340,7 +361,7 @@ index 9bbc313..98a37a5 100644
          if (this->workLoop) {
              this->workLoop->removeEventSource(this->command_gate);
 diff --git a/VoodooGPIO/VoodooGPIOAMD.hpp b/VoodooGPIO/VoodooGPIOAMD.hpp
-index 6a4e8bd..e41b6ef 100644
+index 6a4e8bd..eef425e 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.hpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.hpp
 @@ -10,6 +10,7 @@
@@ -351,7 +372,7 @@ index 6a4e8bd..e41b6ef 100644
  
  /**
   * struct pingroup - provides information on pingroup
-@@ -1641,6 +1642,36 @@ private:
+@@ -1641,6 +1642,40 @@ private:
      IOInterruptAction *pinInterruptAction = nullptr;
      void **pinInterruptRefcons = nullptr;
  
@@ -369,6 +390,10 @@ index 6a4e8bd..e41b6ef 100644
 +    volatile UInt32 diagPin8Seen = 0;
 +    volatile UInt32 diagFallbackPins = 0;
 +    volatile UInt32 diagPin8LowSamples = 0;
++    volatile UInt32 diagPin8StsLow = 0;
++    volatile UInt32 diagPin8Changes = 0;
++    volatile UInt32 diagPin8Last = 0xFFFFFFFF;
++    volatile UInt32 diagPin8Min = 0xFFFFFFFF;
 +    volatile UInt32 diagSetTypeCalls = 0;
 +    volatile UInt32 diagSetTypePin8Calls = 0;
 +    volatile UInt32 diagSetTypeLastPin = 0xFFFFFFFF;
@@ -388,7 +413,7 @@ index 6a4e8bd..e41b6ef 100644
      void amd_gpio_irq_enable(unsigned pin);
      void amd_gpio_irq_disable(unsigned pin);
      void amd_gpio_irq_mask(unsigned pin);
-@@ -1654,6 +1685,7 @@ private:
+@@ -1654,6 +1689,7 @@ private:
      int amd_gpio_resume();
  
      void InterruptOccurred(void *refCon, IOService *nub, int source);
