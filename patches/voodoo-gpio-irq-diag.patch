@@ -1,8 +1,29 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..805c52e 100644
+index 9bbc313..509ddc4 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
-@@ -74,7 +74,16 @@ void VoodooGPIOAMD::amd_gpio_irq_eoi() {
+@@ -23,12 +23,16 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
+     /*
+      * When debounce logic is enabled it takes ~900 us before interrupts
+      * can be enabled. During this "debounce warm up" period the
+-     * "INTERRUPT_ENABLE" bit will read as 0. Poll the bit here until it
+-     * reads back as 1, signaling that interrupts are now enabled.
++     * "INTERRUPT_ENABLE" bit will read as 0. Poll the bit with a bounded
++     * timeout: an unbounded spin here can hang the boot if the bit never
++     * settles (observed on HTIX5288 pin8).
+      */
+     UInt32 mask = BIT(INTERRUPT_ENABLE_OFF) | BIT(INTERRUPT_MASK_OFF);
+-    while ((readl(this->base + pin*4) & mask) != mask)
+-        continue;
++    for (int i = 0; i < 1000; i++) {
++        if ((readl(this->base + pin*4) & mask) == mask)
++            break;
++        IODelay(1);
++    }
+ }
+ 
+ void VoodooGPIOAMD::amd_gpio_irq_disable(unsigned pin) {
+@@ -74,7 +78,16 @@ void VoodooGPIOAMD::amd_gpio_irq_eoi() {
  int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
      int ret = 0;
  
@@ -19,35 +40,55 @@ index 9bbc313..805c52e 100644
  
      switch (type & IRQ_TYPE_SENSE_MASK) {
      case IRQ_TYPE_EDGE_RISING:
-@@ -110,8 +119,27 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
+@@ -110,8 +123,47 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
      }
  
      pin_reg |= CLR_INTR_STAT << INTERRUPT_STS_OFF;
 +
-+    /* HTIX5288 ACPI _CRS declares GpioInt(..., PullUp). Program the
-+     * internal pull-up after the interrupt type register write. */
++    /*
++     * HTIX5288 ACPI _CRS declares GpioInt(Level, ActiveLow, PullUp).
++     * Linux pinctrl-amd programs this bias via pinconf; VoodooGPIO has no
++     * pinconf path, so apply it here. Must be done before the debounce
++     * settle write below, otherwise the final restore drops it.
++     */
 +    if (pin == 8) {
 +        pin_reg |= BIT(PULL_UP_ENABLE_OFF);
 +        pin_reg &= ~BIT(PULL_DOWN_ENABLE_OFF);
 +    }
 +
++    /*
++     * Linux pinctrl-amd: temporarily enable the interrupt and keep it
++     * masked while polling INTERRUPT_ENABLE, so debounce logic has settled
++     * before the final configuration is written back. Without this the
++     * final write can be ignored by the controller.
++     */
++    UInt32 pin_reg_irq_en = pin_reg;
++    pin_reg_irq_en |= BIT(INTERRUPT_ENABLE_OFF);
++    pin_reg_irq_en &= ~BIT(INTERRUPT_MASK_OFF);
++    writel(pin_reg_irq_en, this->base + pin*4);
++
++    UInt32 mask = BIT(INTERRUPT_ENABLE_OFF);
++    for (int i = 0; i < 1000; i++) {
++        if ((readl(this->base + pin*4) & mask) == mask)
++            break;
++        IODelay(1);
++    }
++
      writel(pin_reg, this->base + pin*4);
  
 +    if (pin == 8) {
++        UInt32 rb = readl(this->base + pin*4);
 +        this->diagSetTypePin8After = pin_reg;
-+        this->diagPin8Immediate = readl(this->base + pin*4);
-+        IOSleep(1);
-+        this->diagPin8After1ms = readl(this->base + pin*4);
-+        IOSleep(9);
-+        this->diagPin8After10ms = readl(this->base + pin*4);
-+        IOSleep(90);
-+        this->diagPin8After100ms = readl(this->base + pin*4);
++        this->diagPin8Immediate = rb;
++        this->diagPin8After1ms = rb;
++        this->diagPin8After10ms = rb;
++        this->diagPin8After100ms = rb;
 +    }
 +
      return ret;
  }
  
-@@ -123,6 +151,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -123,6 +175,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
      UInt32 regval;
      UInt64 status, mask;
  
@@ -56,7 +97,7 @@ index 9bbc313..805c52e 100644
      /* Read the wake status */
      status = readl(this->base + WAKE_INT_STATUS_REG1);
      status <<= 32;
-@@ -155,6 +185,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -155,6 +209,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
              if (pin >= this->npins)
                  break;
  
@@ -68,7 +109,7 @@ index 9bbc313..805c52e 100644
              if (OSObject *owner = this->pinInterruptActionOwners[pin])
                  this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
  
-@@ -226,7 +261,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -226,7 +285,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -130,7 +171,7 @@ index 9bbc313..805c52e 100644
  }
  
  /**
-@@ -338,7 +426,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +450,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -144,7 +185,7 @@ index 9bbc313..805c52e 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +530,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +554,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -160,7 +201,7 @@ index 9bbc313..805c52e 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +568,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +592,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
