@@ -135,6 +135,7 @@ static UInt64 g_post_on_calls = 0;
 static UInt64 g_pm_off_calls = 0;
 static UInt64 g_pm_on_calls = 0;
 static UInt64 g_reset_read_calls = 0;
+static UInt32 g_reset_read_nz = 0;
 static int g_reset_read_ret = 0;
 static int g_reset_read_len = 0;
 static UInt8 g_reset_read_head[8] = {0};
@@ -366,23 +367,37 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
             IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
             reset_timed_out = true;
 
-            /* Decisive diagnostic: after reset timeout, read the input
-             * register once. A non-zero length prefix means the device DID
-             * produce a report and the GPIO path lost it; all-zero means the
-             * device never generated one. */
+            /* Decisive diagnostic: sample the input register repeatedly
+             * right after the reset handshake. A non-zero length prefix
+             * proves the device produces reports and only the GPIO/IRQ path
+             * is broken; all-zero proves the device never leaves reset
+             * state. 40 reads over ~2s. */
             {
                 UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
                 if (rb) {
-                    for (int i = 0; i < hid_descriptor.wMaxInputLength; i++) rb[i] = 0;
-                    IOReturn rr = api->readI2C(rb, hid_descriptor.wMaxInputLength);
-                    g_reset_read_calls++;
-                    g_reset_read_ret = (int)rr;
-                    g_reset_read_len = rb[0] | (rb[1] << 8);
-                    for (int i = 0; i < 8; i++) g_reset_read_head[i] = rb[i];
+                    int nz = 0, last_len = 0;
+                    UInt8 first_nz[8] = {0};
+                    for (int k = 0; k < 40; k++) {
+                        for (int i = 0; i < hid_descriptor.wMaxInputLength; i++) rb[i] = 0;
+                        IOReturn rr = api->readI2C(rb, hid_descriptor.wMaxInputLength);
+                        g_reset_read_calls++;
+                        g_reset_read_ret = (int)rr;
+                        last_len = rb[0] | (rb[1] << 8);
+                        if (last_len) {
+                            if (!nz) {
+                                for (int i = 0; i < 8; i++) first_nz[i] = rb[i];
+                            }
+                            nz++;
+                        }
+                        IOSleep(50);
+                    }
+                    g_reset_read_len = last_len;
+                    for (int i = 0; i < 8; i++) g_reset_read_head[i] = first_nz[i];
                     setProperty("PhxResetReadCalls", g_reset_read_calls, 64);
                     setProperty("PhxResetReadRet", (UInt32)g_reset_read_ret, 32);
                     setProperty("PhxResetReadLen", (UInt32)g_reset_read_len, 32);
-                    setProperty("PhxResetReadHead", g_reset_read_head, 8);
+                    setProperty("PhxResetReadNz", (UInt32)nz, 32);
+                    setProperty("PhxResetReadHead", first_nz, 8);
                     IOFree(rb, hid_descriptor.wMaxInputLength);
                 }
             }
