@@ -4,6 +4,9 @@ on:
   workflow_dispatch:
   push:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: macos-latest
@@ -45,9 +48,10 @@ jobs:
           cd out && zip -r VoodooI2C-diag.kext.zip VoodooI2C.kext VoodooI2CHID.kext
           shasum -a 256 VoodooI2C-diag.kext.zip
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: VoodooI2C-diag
-          path: out/VoodooI2C-diag.kext.zip
-          if-no-files-found: error
+      - name: Publish rolling release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=diag-latest
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "rolling diagnostic build"
+          gh release upload "$TAG" out/VoodooI2C-diag.kext.zip --clobber
