@@ -613,10 +613,16 @@ bool VoodooI2CHIDDevice::handleStart(IOService* provider) {
         goto exit;
     }
 
-    /* HTIX5288 diagnostic: force polling to separate device from GPIO path.
-     * Declared before the gotos above to keep C++ jump rules satisfied. */
-    interrupt_source = NULL;
-    IOLog("%s::%s Forced polling for HTIX5288 diagnosis", getName(), name);
+    /* HTIX5288 (093A:0005) cannot deliver GPIO interrupts on this platform,
+     * but the device and HID stack work correctly. Linux drives the same
+     * panel through i2c-hid; use its polling fallback so the touchpad is
+     * usable. Other devices keep the normal GPIO interrupt path. */
+    if (hid_descriptor.wVendorID == 0x093A && hid_descriptor.wProductID == 0x0005) {
+        interrupt_source = NULL;
+        IOLog("%s::%s HTIX5288: using polling input path", getName(), name);
+    } else {
+        interrupt_source = IOInterruptEventSource::interruptEventSource(this, OSMemberFunctionCast(IOInterruptEventAction, this, &VoodooI2CHIDDevice::interruptOccured), api, 0);
+    }
     if (interrupt_source) {
         work_loop->addEventSource(interrupt_source);
     } else {
