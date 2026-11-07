@@ -145,6 +145,9 @@ static int g_pre_on_ret = 0;
 static int g_reset_write_ret = 0;
 static int g_reset_wait_ret = 0;
 static int g_post_on_ret = 0;
+static UInt64 g_feature_calls = 0;
+static int g_feature_last_ret = 0;
+static UInt32 g_feature_last_id = 0;
 
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
@@ -425,6 +428,32 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
      */
     if (reset_timed_out)
         IOLog("%s::%s Reset handshake timed out; continuing anyway\n", getName(), name);
+
+    /* Linux hid-multitouch issues feature reports 5/6/7 during HID open.
+     * Replay them here so the device leaves reset-confirmation state. */
+    {
+        struct { UInt8 id; UInt8 value; } features[] = {
+            {7, 0x00}, {5, 0x03}, {6, 0x03},
+        };
+        for (unsigned i = 0; i < sizeof(features)/sizeof(features[0]); i++) {
+            UInt8 payload[2] = {features[i].id, features[i].value};
+            IOBufferMemoryDescriptor* report =
+                IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, 0, sizeof(payload));
+            if (!report)
+                continue;
+            report->writeBytes(0, payload, sizeof(payload));
+            IOReturn fr = setReport(report, kIOHIDReportTypeFeature, features[i].id);
+            report->release();
+            g_feature_calls++;
+            g_feature_last_ret = (int)fr;
+            g_feature_last_id = features[i].id;
+            setProperty("PhxFeatureCalls", g_feature_calls, 64);
+            setProperty("PhxFeatureLastRet", (UInt32)g_feature_last_ret, 32);
+            setProperty("PhxFeatureLastId", (UInt32)g_feature_last_id, 32);
+            IOLog("%s::%s feature id=%u value=0x%02x ret=0x%x", getName(), name, features[i].id, features[i].value, fr);
+            IOSleep(10);
+        }
+    }
 
     return kIOReturnSuccess;
 }
