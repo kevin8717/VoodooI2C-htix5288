@@ -164,6 +164,9 @@ class EXPORT VoodooI2CHIDDevice : public IOHIDDevice {
     bool handleStart(IOService* provider) override;
     
     void simulateInterrupt(OSObject* owner, IOTimerEventSource* timer);
+
+    /* Read-only input-register probe timer (HTIX5288 GPIO-vs-polling diagnostic). */
+    void probeInputTimer(OSObject* owner, IOTimerEventSource* timer);
     
     /* Sets a few properties that are needed after <IOHIDDevice> finishes starting
      * @provider The provider which we have matched against
@@ -287,6 +290,7 @@ class EXPORT VoodooI2CHIDDevice : public IOHIDDevice {
     IOCommandGate* command_gate;
     UInt16 hid_descriptor_register;
     IOTimerEventSource* interrupt_simulator;
+    IOTimerEventSource* probe_timer;
     IOInterruptEventSource* interrupt_source;
     bool ready_for_input;
     bool* reset_event;

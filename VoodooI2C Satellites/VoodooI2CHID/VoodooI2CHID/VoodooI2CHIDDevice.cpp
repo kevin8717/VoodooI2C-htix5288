@@ -27,6 +27,7 @@ bool VoodooI2CHIDDevice::init(OSDictionary* properties) {
     api = NULL;
     command_gate = NULL;
     interrupt_simulator = NULL;
+    probe_timer = NULL;
     interrupt_source = NULL;
     ready_for_input = false;
 
@@ -148,6 +149,12 @@ static int g_post_on_ret = 0;
 static UInt64 g_feature_calls = 0;
 static int g_feature_last_ret = 0;
 static UInt32 g_feature_last_id = 0;
+static UInt64 g_probe_reads = 0;
+static UInt64 g_probe_nz = 0;
+static UInt64 g_probe_len32 = 0;
+static UInt64 g_probe_len0 = 0;
+static UInt32 g_probe_last_len = 0;
+static UInt8 g_probe_last_head[8] = {0};
 
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
@@ -295,6 +302,11 @@ void VoodooI2CHIDDevice::releaseResources() {
     }
 
     stopInterrupt();
+
+    if (probe_timer) {
+        work_loop->removeEventSource(probe_timer);
+        OSSafeReleaseNULL(probe_timer);
+    }
 
     if (interrupt_simulator) {
         work_loop->removeEventSource(interrupt_simulator);
@@ -456,6 +468,48 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     }
 
     return kIOReturnSuccess;
+}
+
+/* Read-only probe: actively read the input register every 100 ms while the
+ * GPIO interrupt path stays untouched. Distinguishes "device never reports"
+ * from "device only reports when the host reads it". */
+void VoodooI2CHIDDevice::probeInputTimer(OSObject* owner, IOTimerEventSource* timer) {
+    if (timer)
+        timer->setTimeoutMS(100);
+
+    if (!awake || !api)
+        return;
+
+    UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
+    if (!rb)
+        return;
+
+    for (int i = 0; i < hid_descriptor.wMaxInputLength; i++)
+        rb[i] = 0;
+
+    IOReturn rr = api->readI2C(rb, hid_descriptor.wMaxInputLength);
+    UInt32 len = rb[0] | (rb[1] << 8);
+
+    g_probe_reads++;
+    g_probe_last_len = len;
+    for (int i = 0; i < 8; i++)
+        g_probe_last_head[i] = rb[i];
+    if (len)
+        g_probe_nz++;
+    if (len == 32)
+        g_probe_len32++;
+    if (len == 0)
+        g_probe_len0++;
+
+    setProperty("PhxProbeReads", g_probe_reads, 64);
+    setProperty("PhxProbeNz", g_probe_nz, 64);
+    setProperty("PhxProbeLen32", g_probe_len32, 64);
+    setProperty("PhxProbeLen0", g_probe_len0, 64);
+    setProperty("PhxProbeLastLen", g_probe_last_len, 32);
+    setProperty("PhxProbeLastRet", (UInt32)rr, 32);
+    setProperty("PhxProbeLastHead", g_probe_last_head, 8);
+
+    IOFree(rb, hid_descriptor.wMaxInputLength);
 }
 
 IOReturn VoodooI2CHIDDevice::setHIDPowerState(VoodooI2CState state) {
@@ -632,6 +686,14 @@ bool VoodooI2CHIDDevice::handleStart(IOService* provider) {
         work_loop->addEventSource(interrupt_simulator);
     }
     startInterrupt();
+
+    probe_timer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &VoodooI2CHIDDevice::probeInputTimer));
+    if (probe_timer) {
+        if (work_loop->addEventSource(probe_timer) == kIOReturnSuccess)
+            probe_timer->setTimeoutMS(100);
+        else
+            OSSafeReleaseNULL(probe_timer);
+    }
 
     lookupQuirks();
     resetHIDDevice();
