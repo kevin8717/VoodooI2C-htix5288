@@ -138,6 +138,8 @@ static UInt64 g_reset_read_calls = 0;
 static int g_reset_read_ret = 0;
 static int g_reset_read_len = 0;
 static UInt8 g_reset_read_head[8] = {0};
+static UInt64 g_open_calls = 0;
+static UInt64 g_close_calls = 0;
 static int g_pre_on_ret = 0;
 static int g_reset_write_ret = 0;
 static int g_reset_wait_ret = 0;
@@ -399,7 +401,17 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     setProperty("PhxPostOnCalls", g_post_on_calls, 64);
     setProperty("PhxPostOnRet", (UInt32)g_post_on_ret, 32);
 
-    return reset_timed_out ? kIOReturnTimeout : kIOReturnSuccess;
+    /*
+     * Linux i2c-hid treats a reset-complete timeout as non-fatal: it logs a
+     * warning, clears the pending flag and continues with SET_POWER(ON).
+     * Windows also resumes its read queue after its ~4s timer expires.
+     * Returning kIOReturnTimeout here aborted the HID open path on this
+     * device, leaving it silent after the reset handshake.
+     */
+    if (reset_timed_out)
+        IOLog("%s::%s Reset handshake timed out; continuing anyway\n", getName(), name);
+
+    return kIOReturnSuccess;
 }
 
 IOReturn VoodooI2CHIDDevice::setHIDPowerState(VoodooI2CState state) {
@@ -703,10 +715,18 @@ bool VoodooI2CHIDDevice::open(IOService *forClient, IOOptionBits options, void *
     clients->setObject(forClient);
     IOUnlock(client_lock);
 
-    return super::open(forClient, options, arg);
+    g_open_calls++;
+    setProperty("PhxOpenCalls", g_open_calls, 64);
+
+    bool r = super::open(forClient, options, arg);
+    setProperty("PhxOpenRet", (UInt32)(r ? 0 : 1), 32);
+    return r;
 }
 
 void VoodooI2CHIDDevice::close(IOService *forClient, IOOptionBits options) {
+    g_close_calls++;
+    setProperty("PhxCloseCalls", g_close_calls, 64);
+
     IOLockLock(client_lock);
 
     for(int i = 0; i < clients->getCount(); i++) {
