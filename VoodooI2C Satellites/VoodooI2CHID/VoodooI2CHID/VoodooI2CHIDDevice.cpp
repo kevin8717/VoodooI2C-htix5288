@@ -346,12 +346,72 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     g_reset_enter_calls++;
     setProperty("PhxResetEnterCalls", g_reset_enter_calls, 64);
 
-    IOReturn pre_on_ret = setHIDPowerState(kVoodooI2CStateOn);
+    /* Reproduce the Linux i2c-hid + hid-multitouch transaction sequence
+     * exactly as captured on this panel (tp-evidence/01-reset-trace.txt):
+     *
+     *   SET_REPORT 7=01, 5=03, 6=03
+     *   SET_POWER(SLEEP)
+     *   (probe) read 1 byte
+     *   GET_HID_DESCRIPTOR (30B)
+     *   SET_POWER(ON)
+     *   RESET
+     *   [IRQ] read 32B reset ack
+     *   SET_POWER(ON)
+     *   GET_REPORT_DESCRIPTOR (686B)
+     *   GET_REPORT Feature 3, 4, 10
+     *   SET_REPORT 7=00,5=03,6=03
+     *   SET_REPORT 7=00,5=03,6=03
+     *   SET_REPORT 7=01,5=03,6=00
+     */
+
+    /* --- 1. pre-reset feature triple: 7=01, 5=03, 6=03 --- */
+    {
+        struct { UInt8 id; UInt8 value; } pre[] = {
+            {7, 0x01}, {5, 0x03}, {6, 0x03},
+        };
+        for (unsigned i = 0; i < sizeof(pre)/sizeof(pre[0]); i++) {
+            UInt8 payload[2] = {pre[i].id, pre[i].value};
+            IOBufferMemoryDescriptor* r =
+                IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, 0, sizeof(payload));
+            if (!r) continue;
+            r->writeBytes(0, payload, sizeof(payload));
+            setReport(r, kIOHIDReportTypeFeature, pre[i].id);
+            r->release();
+            IOSleep(10);
+        }
+    }
+
+    /* --- 2. SET_POWER(SLEEP) before re-initialisation --- */
+    IOReturn pre_on_ret = setHIDPowerState(kVoodooI2CStateOff);
     g_pre_on_calls++;
     g_pre_on_ret = (int)pre_on_ret;
     setProperty("PhxPreOnCalls", g_pre_on_calls, 64);
     setProperty("PhxPreOnRet", (UInt32)g_pre_on_ret, 32);
+    IOSleep(100);
 
+    /* --- 3. probe: read 1 byte (device presence) --- */
+    {
+        UInt8 probe = 0;
+        api->readI2C(&probe, 1);
+        setProperty("PhxProbeByte", (UInt32)probe, 8);
+    }
+
+    /* --- 4. re-read HID descriptor (30B) --- */
+    {
+        UInt8 desc[30];
+        memset(desc, 0, sizeof(desc));
+        VoodooI2CHIDDeviceCommand cmd;
+        cmd.c.reg = hid_descriptor_register;
+        IOReturn dr = api->writeReadI2C(cmd.data, 2, desc, sizeof(desc));
+        setProperty("PhxDescRet", (UInt32)dr, 32);
+        setProperty("PhxDescLen", (UInt32)(desc[0] | (desc[1] << 8)), 16);
+    }
+
+    /* --- 5. SET_POWER(ON) --- */
+    IOReturn on_ret = setHIDPowerState(kVoodooI2CStateOn);
+    setProperty("PhxOnRet", (UInt32)on_ret, 32);
+
+    /* --- 6. RESET --- */
     VoodooI2CHIDDeviceCommand command;
     command.c.reg = hid_descriptor.wCommandRegister;
     command.c.opcode = 0x01;
@@ -364,12 +424,9 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     setProperty("PhxResetWriteRet", (UInt32)g_reset_write_ret, 32);
 
     bool reset_timed_out = false;
-
     if (quirks & I2C_HID_QUIRK_NO_IRQ_AFTER_RESET) {
         IOSleep(100);
     } else {
-        // Device is required to complete a host-initiated reset in at most 5 seconds. We give it 12 as Linux quirks don't handle some devices.
-
         AbsoluteTime absolute_time, deadline;
         nanoseconds_to_absolutetime(12000000000, &absolute_time);
         clock_absolutetime_interval_to_deadline(absolute_time, &deadline);
@@ -383,123 +440,86 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
         if (sleep == THREAD_TIMED_OUT) {
             g_reset_timeout_calls++;
             setProperty("PhxResetTimeoutCalls", g_reset_timeout_calls, 64);
-            setProperty("PhxPostOnCalls", g_post_on_calls, 64);
-            IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
+            IOLog("%s::%s Timeout waiting for device to complete host initiated reset", getName(), name);
             reset_timed_out = true;
-
-            /* Decisive diagnostic: sample the input register repeatedly
-             * right after the reset handshake. A non-zero length prefix
-             * proves the device produces reports and only the GPIO/IRQ path
-             * is broken; all-zero proves the device never leaves reset
-             * state. 40 reads over ~2s. */
-            {
-                UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
-                if (rb) {
-                    int nz = 0, last_len = 0;
-                    UInt8 first_nz[8] = {0};
-                    for (int k = 0; k < 40; k++) {
-                        for (int i = 0; i < hid_descriptor.wMaxInputLength; i++) rb[i] = 0;
-                        IOReturn rr = api->readI2C(rb, hid_descriptor.wMaxInputLength);
-                        g_reset_read_calls++;
-                        g_reset_read_ret = (int)rr;
-                        last_len = rb[0] | (rb[1] << 8);
-                        if (last_len) {
-                            if (!nz) {
-                                for (int i = 0; i < 8; i++) first_nz[i] = rb[i];
-                            }
-                            nz++;
-                        }
-                        IOSleep(50);
-                    }
-                    g_reset_read_len = last_len;
-                    for (int i = 0; i < 8; i++) g_reset_read_head[i] = first_nz[i];
-                    setProperty("PhxResetReadCalls", g_reset_read_calls, 64);
-                    setProperty("PhxResetReadRet", (UInt32)g_reset_read_ret, 32);
-                    setProperty("PhxResetReadLen", (UInt32)g_reset_read_len, 32);
-                    setProperty("PhxResetReadNz", (UInt32)nz, 32);
-                    setProperty("PhxResetReadHead", first_nz, 8);
-                    IOFree(rb, hid_descriptor.wMaxInputLength);
-                }
-            }
         } else if (sleep == THREAD_AWAKENED) {
             g_reset_awake_calls++;
             setProperty("PhxResetAwakeCalls", g_reset_awake_calls, 64);
-            IOLog("%s::%s Device initiated reset accomplished\n", getName(), name);
+            IOLog("%s::%s Device initiated reset accomplished", getName(), name);
         }
     }
 
-    /* Linux i2c-hid re-sends SET_POWER(ON) after RESET completes.
-     * Hantick HTIX5288 does not reliably resume reporting without it. */
+    /* --- 7. SET_POWER(ON) after reset --- */
     IOReturn post_on_ret = setHIDPowerState(kVoodooI2CStateOn);
     g_post_on_calls++;
     g_post_on_ret = (int)post_on_ret;
     setProperty("PhxPostOnCalls", g_post_on_calls, 64);
     setProperty("PhxPostOnRet", (UInt32)g_post_on_ret, 32);
 
-    /*
-     * Linux i2c-hid treats a reset-complete timeout as non-fatal: it logs a
-     * warning, clears the pending flag and continues with SET_POWER(ON).
-     * Windows also resumes its read queue after its ~4s timer expires.
-     * Returning kIOReturnTimeout here aborted the HID open path on this
-     * device, leaving it silent after the reset handshake.
-     */
     if (reset_timed_out)
-        IOLog("%s::%s Reset handshake timed out; continuing anyway\n", getName(), name);
+        IOLog("%s::%s Reset handshake timed out; continuing anyway", getName(), name);
 
-    /* Linux hid-multitouch issues feature reports 5/6/7 during HID open.
-     * Replay them here so the device leaves reset-confirmation state. */
+    /* --- 8. GET_REPORT Feature 3, 4, 10 --- */
     {
-        struct { UInt8 id; UInt8 value; } features[] = {
-            {7, 0x00}, {5, 0x03}, {6, 0x03},
+        struct { UInt8 id; UInt16 len; } gets[] = {
+            {3, 4}, {4, 4}, {10, 259},
         };
-        for (unsigned i = 0; i < sizeof(features)/sizeof(features[0]); i++) {
-            UInt8 payload[2] = {features[i].id, features[i].value};
-            IOBufferMemoryDescriptor* report =
-                IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, 0, sizeof(payload));
-            if (!report)
-                continue;
-            report->writeBytes(0, payload, sizeof(payload));
-            IOReturn fr = setReport(report, kIOHIDReportTypeFeature, features[i].id);
-            report->release();
-            g_feature_calls++;
-            g_feature_last_ret = (int)fr;
-            g_feature_last_id = features[i].id;
-            setProperty("PhxFeatureCalls", g_feature_calls, 64);
-            setProperty("PhxFeatureLastRet", (UInt32)g_feature_last_ret, 32);
-            setProperty("PhxFeatureLastId", (UInt32)g_feature_last_id, 32);
-            IOLog("%s::%s feature id=%u value=0x%02x ret=0x%x", getName(), name, features[i].id, features[i].value, fr);
+        for (unsigned i = 0; i < sizeof(gets)/sizeof(gets[0]); i++) {
+            UInt8 *buf = (UInt8 *)IOMalloc(gets[i].len);
+            if (!buf) continue;
+            memset(buf, 0, gets[i].len);
+
+            VoodooI2CHIDDeviceCommand cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.c.reg = hid_descriptor.wCommandRegister;
+            cmd.c.report_type_id = (0x03 << 4) | gets[i].id;
+            cmd.c.opcode = 0x02;
+
+            UInt8 wbuf[6] = {
+                (UInt8)(hid_descriptor.wCommandRegister & 0xFF),
+                (UInt8)(hid_descriptor.wCommandRegister >> 8),
+                (UInt8)((0x03 << 4) | gets[i].id),
+                0x02,
+                (UInt8)(hid_descriptor.wDataRegister & 0xFF),
+                (UInt8)(hid_descriptor.wDataRegister >> 8),
+            };
+            IOReturn gr = api->writeReadI2C(wbuf, sizeof(wbuf), buf, gets[i].len);
+            setProperty("PhxGetRet", (UInt32)gr, 32);
+            setProperty("PhxGetId", (UInt32)gets[i].id, 8);
+            setProperty("PhxGetLen", (UInt32)(buf[0] | (buf[1] << 8)), 16);
+            UInt8 head[8] = {0};
+            for (int k = 0; k < 8 && k < gets[i].len; k++) head[k] = buf[k];
+            if (gets[i].id == 3) setProperty("PhxGet3Head", head, 8);
+            if (gets[i].id == 4) setProperty("PhxGet4Head", head, 8);
+            if (gets[i].id == 10) setProperty("PhxGet10Head", head, 8);
+            IOLog("%s::%s GET_REPORT id=%u len=%u ret=0x%x", getName(), name, gets[i].id,
+                  (unsigned)(buf[0] | (buf[1] << 8)), gr);
+            IOFree(buf, gets[i].len);
             IOSleep(10);
         }
     }
 
-    /* HID class requests: SET_IDLE(0) and SET_PROTOCOL(Report).
-     * Linux issues these from the HID core after the transport is ready;
-     * without them some panels stay in request/response mode and never
-     * raise the data-ready interrupt. */
+    /* --- 9. three SET_REPORT groups, exact values from trace --- */
     {
-        struct { UInt8 opcode; UInt8 report_type; UInt8 value; } hid_reqs[] = {
-            {0x05, 0x00, 0x00},   /* SET_IDLE: idle rate 0 (indefinite) */
-            {0x07, 0x00, 0x01},   /* SET_PROTOCOL: report protocol */
+        struct { UInt8 id; UInt8 value; } seq[] = {
+            {7, 0x00}, {5, 0x03}, {6, 0x03},
+            {7, 0x00}, {5, 0x03}, {6, 0x03},
+            {7, 0x01}, {5, 0x03}, {6, 0x00},
         };
-        for (unsigned i = 0; i < sizeof(hid_reqs)/sizeof(hid_reqs[0]); i++) {
-            VoodooI2CHIDDeviceCommand cmd;
-            memset(&cmd, 0, sizeof(cmd));
-            cmd.c.reg = hid_descriptor.wCommandRegister;
-            cmd.c.report_type_id = hid_reqs[i].report_type;
-            cmd.c.opcode = hid_reqs[i].opcode;
-            UInt8 buf[5] = { (UInt8)(hid_descriptor.wCommandRegister & 0xFF),
-                             (UInt8)(hid_descriptor.wCommandRegister >> 8),
-                             hid_reqs[i].report_type,
-                             hid_reqs[i].opcode,
-                             hid_reqs[i].value };
-            IOReturn hr = api->writeI2C(buf, sizeof(buf));
-            g_hidreq_calls++;
-            g_hidreq_last_ret = (int)hr;
-            g_hidreq_last_op = hid_reqs[i].opcode;
-            setProperty("PhxHidReqCalls", g_hidreq_calls, 64);
-            setProperty("PhxHidReqLastRet", (UInt32)g_hidreq_last_ret, 32);
-            setProperty("PhxHidReqLastOp", (UInt32)g_hidreq_last_op, 32);
-            IOLog("%s::%s hid req op=0x%02x val=0x%02x ret=0x%x", getName(), name, hid_reqs[i].opcode, hid_reqs[i].value, hr);
+        for (unsigned i = 0; i < sizeof(seq)/sizeof(seq[0]); i++) {
+            UInt8 payload[2] = {seq[i].id, seq[i].value};
+            IOBufferMemoryDescriptor* r =
+                IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, 0, sizeof(payload));
+            if (!r) continue;
+            r->writeBytes(0, payload, sizeof(payload));
+            IOReturn fr = setReport(r, kIOHIDReportTypeFeature, seq[i].id);
+            r->release();
+            g_feature_calls++;
+            g_feature_last_ret = (int)fr;
+            g_feature_last_id = seq[i].id;
+            setProperty("PhxFeatureCalls", g_feature_calls, 64);
+            setProperty("PhxFeatureLastRet", (UInt32)g_feature_last_ret, 32);
+            setProperty("PhxFeatureLastId", (UInt32)g_feature_last_id, 32);
             IOSleep(10);
         }
     }
