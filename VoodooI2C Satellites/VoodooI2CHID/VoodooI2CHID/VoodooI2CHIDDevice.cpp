@@ -158,6 +158,8 @@ static UInt8 g_probe_last_head[8] = {0};
 static UInt64 g_hidreq_calls = 0;
 static int g_hidreq_last_ret = 0;
 static UInt32 g_hidreq_last_op = 0;
+static UInt64 g_ps0_calls = 0;
+static int g_ps0_ret = 0;
 
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
@@ -341,6 +343,18 @@ IOReturn VoodooI2CHIDDevice::resetHIDDevice() {
 }
 
 IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
+    /* Re-run ACPI _PS0 right before power-on: DSDT gates the touchpad's
+     * EC enable (ENTP) behind _PS0. If the EC driver was not ready during
+     * probe, this replays the handshake. */
+    if (acpi_device) {
+        IOReturn ps0 = acpi_device->evaluateObject("_PS0");
+        g_ps0_calls++;
+        g_ps0_ret = (int)ps0;
+        setProperty("PhxPs0Calls", g_ps0_calls, 64);
+        setProperty("PhxPs0Ret", (UInt32)g_ps0_ret, 32);
+        IOLog("%s::%s _PS0 replay ret=0x%x", getName(), name, ps0);
+    }
+
     g_reset_enter_calls++;
     setProperty("PhxResetEnterCalls", g_reset_enter_calls, 64);
 
@@ -514,6 +528,16 @@ void VoodooI2CHIDDevice::probeInputTimer(OSObject* owner, IOTimerEventSource* ti
 
     if (!awake || !api)
         return;
+
+    /* Arm-only mode: read a few times so the device sees an active host,
+     * then stop so a data-ready interrupt (if any) can be observed. */
+    if (g_probe_reads >= 30) {
+        if (timer) {
+            timer->disable();
+            setProperty("PhxProbeStopped", (UInt32)1, 32);
+        }
+        return;
+    }
 
     UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
     if (!rb)
