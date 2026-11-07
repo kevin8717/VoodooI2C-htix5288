@@ -71,7 +71,10 @@ bool VoodooI2CDeviceNub::attach(IOService* provider, IOService* child) {
 
 IOReturn VoodooI2CDeviceNub::disableInterrupt(int source) {
     if (has_gpio_interrupts) {
-        return gpio_controller->disableInterrupt(gpio_pin);
+        IOReturn r = gpio_controller->disableInterrupt(gpio_pin);
+        setProperty("PhxDisableIrqCalls", ++phx_disable_calls, 32);
+        setProperty("PhxDisableIrqRet", (UInt32)r, 32);
+        return r;
     } else {
         return acpi_device->disableInterrupt(source);
     }
@@ -79,7 +82,10 @@ IOReturn VoodooI2CDeviceNub::disableInterrupt(int source) {
 
 IOReturn VoodooI2CDeviceNub::enableInterrupt(int source) {
     if (has_gpio_interrupts) {
-        return gpio_controller->enableInterrupt(gpio_pin);
+        IOReturn r = gpio_controller->enableInterrupt(gpio_pin);
+        setProperty("PhxEnableIrqCalls", ++phx_enable_calls, 32);
+        setProperty("PhxEnableIrqRet", (UInt32)r, 32);
+        return r;
     } else {
         return acpi_device->enableInterrupt(source);
     }
@@ -312,11 +318,14 @@ IOReturn VoodooI2CDeviceNub::readI2CGated(UInt8* values, UInt16* length) {
 IOReturn VoodooI2CDeviceNub::registerInterrupt(int source, OSObject *target, IOInterruptAction handler, void *refcon) {
     if (has_gpio_interrupts) {
         gpio_controller->setInterruptTypeForPin(gpio_pin, gpio_irq);
-        return gpio_controller->registerInterrupt(gpio_pin, target, handler, refcon);
+        IOReturn r = gpio_controller->registerInterrupt(gpio_pin, target, handler, refcon);
+        setProperty("PhxRegisterIrqCalls", ++phx_register_calls, 32);
+        setProperty("PhxRegisterIrqRet", (UInt32)r, 32);
+        setProperty("PhxRegisterIrqPin", (UInt32)gpio_pin, 32);
+        return r;
     } else {
         return acpi_device->registerInterrupt(source, target, handler, refcon);
     }
-    return kIOReturnSuccess;
 }
 
 void VoodooI2CDeviceNub::releaseResources() {

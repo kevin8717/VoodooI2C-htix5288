@@ -202,6 +202,9 @@ class EXPORT VoodooI2CDeviceNub : public IOService {
     int gpio_irq;
     UInt16 gpio_pin;
     UInt8 i2c_address;
+    UInt32 phx_register_calls = 0;
+    UInt32 phx_enable_calls = 0;
+    UInt32 phx_disable_calls = 0;
     bool has_apic_interrupts {false};
     bool has_gpio_interrupts {false};
     bool use_10bit_addressing {false};

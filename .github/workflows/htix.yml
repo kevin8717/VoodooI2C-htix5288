@@ -23,23 +23,23 @@ jobs:
         run: |
           src=$(/usr/bin/curl -Lfs https://raw.githubusercontent.com/acidanthera/VoodooInput/master/VoodooInput/Scripts/bootstrap.sh) && eval "$src" && mv VoodooInput Dependencies
 
-      - name: Build
+      - name: Build VoodooI2C
         run: |
-          xcodebuild \
-            -project "VoodooI2C Satellites/VoodooI2CHID/VoodooI2CHID.xcodeproj" \
-            -scheme VoodooI2CHID \
-            -configuration Release \
-            -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
+          xcodebuild -project "VoodooI2C/VoodooI2C.xcodeproj" -scheme VoodooI2C -configuration Release -derivedDataPath build-i2c CODE_SIGNING_ALLOWED=NO
+
+      - name: Build VoodooI2CHID
+        run: |
+          xcodebuild -project "VoodooI2C Satellites/VoodooI2CHID/VoodooI2CHID.xcodeproj" -scheme VoodooI2CHID -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO
 
       - name: Package
         run: |
           mkdir -p out
+          cp -R build-i2c/Build/Products/Release/VoodooI2C.kext out/
           cp -R build/Build/Products/Release/VoodooI2CHID.kext out/
-          cd out && zip -r VoodooI2CHID.kext.zip VoodooI2CHID.kext
-          shasum -a 256 VoodooI2CHID.kext.zip
+          cd out && zip -r VoodooI2C-diag.kext.zip VoodooI2C.kext VoodooI2CHID.kext
+          shasum -a 256 VoodooI2C-diag.kext.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: VoodooI2CHID
-          path: out/VoodooI2CHID.kext.zip
+          name: VoodooI2C-diag
+          path: out/VoodooI2C-diag.kext.zip
