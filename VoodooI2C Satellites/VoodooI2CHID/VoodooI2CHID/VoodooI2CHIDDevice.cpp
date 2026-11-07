@@ -387,7 +387,9 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     g_pre_on_ret = (int)pre_on_ret;
     setProperty("PhxPreOnCalls", g_pre_on_calls, 64);
     setProperty("PhxPreOnRet", (UInt32)g_pre_on_ret, 32);
-    IOSleep(100);
+    /* Linux trace: SLEEP at 434.4379, next transaction (1-byte probe) at
+     * 435.5023 — a ~1064 ms gap. Wait the same before re-initialising. */
+    IOSleep(1000);
 
     /* --- 3. probe: read 1 byte (device presence) --- */
     {
@@ -410,6 +412,9 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     /* --- 5. SET_POWER(ON) --- */
     IOReturn on_ret = setHIDPowerState(kVoodooI2CStateOn);
     setProperty("PhxOnRet", (UInt32)on_ret, 32);
+
+    /* Linux: SET_POWER(ON) at 435.5036, RESET at 435.5638 -> 60 ms gap. */
+    IOSleep(60);
 
     /* --- 6. RESET --- */
     VoodooI2CHIDDeviceCommand command;
@@ -458,6 +463,9 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
 
     if (reset_timed_out)
         IOLog("%s::%s Reset handshake timed out; continuing anyway", getName(), name);
+
+    /* Linux: post-reset SET_POWER(ON) 435.5652, first GET_REPORT 435.6454. */
+    IOSleep(60);
 
     /* --- 8. GET_REPORT Feature 3, 4, 10 --- */
     {
