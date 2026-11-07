@@ -1,5 +1,5 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..16c495d 100644
+index 9bbc313..805c52e 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
 @@ -74,7 +74,16 @@ void VoodooGPIOAMD::amd_gpio_irq_eoi() {
@@ -19,7 +19,7 @@ index 9bbc313..16c495d 100644
  
      switch (type & IRQ_TYPE_SENSE_MASK) {
      case IRQ_TYPE_EDGE_RISING:
-@@ -110,8 +119,19 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
+@@ -110,8 +119,27 @@ int VoodooGPIOAMD::amd_gpio_irq_set_type(unsigned pin, unsigned int type) {
      }
  
      pin_reg |= CLR_INTR_STAT << INTERRUPT_STS_OFF;
@@ -33,13 +33,21 @@ index 9bbc313..16c495d 100644
 +
      writel(pin_reg, this->base + pin*4);
  
-+    if (pin == 8)
++    if (pin == 8) {
 +        this->diagSetTypePin8After = pin_reg;
++        this->diagPin8Immediate = readl(this->base + pin*4);
++        IOSleep(1);
++        this->diagPin8After1ms = readl(this->base + pin*4);
++        IOSleep(9);
++        this->diagPin8After10ms = readl(this->base + pin*4);
++        IOSleep(90);
++        this->diagPin8After100ms = readl(this->base + pin*4);
++    }
 +
      return ret;
  }
  
-@@ -123,6 +143,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -123,6 +151,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
      UInt32 regval;
      UInt64 status, mask;
  
@@ -48,7 +56,7 @@ index 9bbc313..16c495d 100644
      /* Read the wake status */
      status = readl(this->base + WAKE_INT_STATUS_REG1);
      status <<= 32;
-@@ -155,6 +177,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -155,6 +185,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
              if (pin >= this->npins)
                  break;
  
@@ -60,7 +68,7 @@ index 9bbc313..16c495d 100644
              if (OSObject *owner = this->pinInterruptActionOwners[pin])
                  this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
  
-@@ -226,7 +253,56 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -226,7 +261,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -115,10 +123,14 @@ index 9bbc313..16c495d 100644
 +    setProperty("PhxGpioSetInterruptTypeLastPin", (UInt32)this->diagSetInterruptTypeLastPin, 32);
 +    setProperty("PhxGpioSetInterruptTypeLastValue", (UInt32)this->diagSetInterruptTypeLastValue, 32);
 +    setProperty("PhxGpioInterruptType8", (UInt32)this->diagInterruptType8, 32);
++    setProperty("PhxGpioPin8Immediate", (UInt32)this->diagPin8Immediate, 32);
++    setProperty("PhxGpioPin8After1ms", (UInt32)this->diagPin8After1ms, 32);
++    setProperty("PhxGpioPin8After10ms", (UInt32)this->diagPin8After10ms, 32);
++    setProperty("PhxGpioPin8After100ms", (UInt32)this->diagPin8After100ms, 32);
  }
  
  /**
-@@ -338,7 +414,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +426,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -132,7 +144,7 @@ index 9bbc313..16c495d 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +518,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +530,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -148,7 +160,7 @@ index 9bbc313..16c495d 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +556,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +568,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
@@ -163,7 +175,7 @@ index 9bbc313..16c495d 100644
          if (this->workLoop) {
              this->workLoop->removeEventSource(this->command_gate);
 diff --git a/VoodooGPIO/VoodooGPIOAMD.hpp b/VoodooGPIO/VoodooGPIOAMD.hpp
-index 6a4e8bd..95ec441 100644
+index 6a4e8bd..bff1f84 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.hpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.hpp
 @@ -10,6 +10,7 @@
@@ -174,7 +186,7 @@ index 6a4e8bd..95ec441 100644
  
  /**
   * struct pingroup - provides information on pingroup
-@@ -1641,6 +1642,30 @@ private:
+@@ -1641,6 +1642,34 @@ private:
      IOInterruptAction *pinInterruptAction = nullptr;
      void **pinInterruptRefcons = nullptr;
  
@@ -201,11 +213,15 @@ index 6a4e8bd..95ec441 100644
 +    volatile UInt32 diagSetInterruptTypeLastPin = 0xFFFFFFFF;
 +    volatile UInt32 diagSetInterruptTypeLastValue = 0xFFFFFFFF;
 +    volatile UInt32 diagInterruptType8 = 0xFFFFFFFF;
++    volatile UInt32 diagPin8Immediate = 0;
++    volatile UInt32 diagPin8After1ms = 0;
++    volatile UInt32 diagPin8After10ms = 0;
++    volatile UInt32 diagPin8After100ms = 0;
 +
      void amd_gpio_irq_enable(unsigned pin);
      void amd_gpio_irq_disable(unsigned pin);
      void amd_gpio_irq_mask(unsigned pin);
-@@ -1654,6 +1679,7 @@ private:
+@@ -1654,6 +1683,7 @@ private:
      int amd_gpio_resume();
  
      void InterruptOccurred(void *refCon, IOService *nub, int source);
