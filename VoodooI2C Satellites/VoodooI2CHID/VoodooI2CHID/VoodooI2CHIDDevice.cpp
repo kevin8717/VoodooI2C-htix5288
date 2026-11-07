@@ -334,6 +334,8 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     setProperty("PhxResetWriteCalls", g_reset_write_calls, 64);
     setProperty("PhxResetWriteRet", (UInt32)g_reset_write_ret, 32);
 
+    bool reset_timed_out = false;
+
     if (quirks & I2C_HID_QUIRK_NO_IRQ_AFTER_RESET) {
         IOSleep(100);
     } else {
@@ -354,7 +356,7 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
             setProperty("PhxResetTimeoutCalls", g_reset_timeout_calls, 64);
             setProperty("PhxPostOnCalls", g_post_on_calls, 64);
             IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
-            return kIOReturnTimeout;
+            reset_timed_out = true;
         } else if (sleep == THREAD_AWAKENED) {
             g_reset_awake_calls++;
             setProperty("PhxResetAwakeCalls", g_reset_awake_calls, 64);
@@ -370,7 +372,7 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     setProperty("PhxPostOnCalls", g_post_on_calls, 64);
     setProperty("PhxPostOnRet", (UInt32)g_post_on_ret, 32);
 
-    return kIOReturnSuccess;
+    return reset_timed_out ? kIOReturnTimeout : kIOReturnSuccess;
 }
 
 IOReturn VoodooI2CHIDDevice::setHIDPowerState(VoodooI2CState state) {
