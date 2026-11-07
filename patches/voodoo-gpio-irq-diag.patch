@@ -1,8 +1,23 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..0f67b4d 100644
+index 9bbc313..100ac41 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
-@@ -123,6 +123,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -18,6 +18,14 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
+     UInt32 pin_reg = readl(this->base + pin*4);
+     pin_reg |= BIT(INTERRUPT_ENABLE_OFF);
+     pin_reg |= BIT(INTERRUPT_MASK_OFF);
++
++    /* HTIX5288 ACPI _CRS declares GpioInt(..., PullUp). The AMD GPIO
++     * driver must program the internal pull-up explicitly. */
++    if (pin == 8) {
++        pin_reg |= BIT(PULL_UP_ENABLE_OFF);
++        pin_reg &= ~BIT(PULL_DOWN_ENABLE_OFF);
++    }
++
+     writel(pin_reg, this->base + pin*4);
+ 
+     /*
+@@ -123,6 +131,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
      UInt32 regval;
      UInt64 status, mask;
  
@@ -11,7 +26,7 @@ index 9bbc313..0f67b4d 100644
      /* Read the wake status */
      status = readl(this->base + WAKE_INT_STATUS_REG1);
      status <<= 32;
-@@ -155,6 +157,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+@@ -155,6 +165,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
              if (pin >= this->npins)
                  break;
  
@@ -23,7 +38,7 @@ index 9bbc313..0f67b4d 100644
              if (OSObject *owner = this->pinInterruptActionOwners[pin])
                  this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
  
-@@ -226,7 +233,43 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -226,7 +241,45 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -65,10 +80,12 @@ index 9bbc313..0f67b4d 100644
 +    setProperty("PhxGpioPin8Sts", (UInt32)((pin8 >> PIN_STS_OFF) & 1), 32);
 +    setProperty("PhxGpioPin8En", (UInt32)((pin8 >> INTERRUPT_ENABLE_OFF) & 1), 32);
 +    setProperty("PhxGpioPin8Mask", (UInt32)((pin8 >> INTERRUPT_MASK_OFF) & 1), 32);
++    setProperty("PhxGpioPin8PullUp", (UInt32)((pin8 >> PULL_UP_ENABLE_OFF) & 1), 32);
++    setProperty("PhxGpioPin8PullDown", (UInt32)((pin8 >> PULL_DOWN_ENABLE_OFF) & 1), 32);
  }
  
  /**
-@@ -436,6 +479,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +489,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -84,7 +101,7 @@ index 9bbc313..0f67b4d 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +517,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +527,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
