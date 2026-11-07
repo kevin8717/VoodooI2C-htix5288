@@ -155,6 +155,9 @@ static UInt64 g_probe_len32 = 0;
 static UInt64 g_probe_len0 = 0;
 static UInt32 g_probe_last_len = 0;
 static UInt8 g_probe_last_head[8] = {0};
+static UInt64 g_hidreq_calls = 0;
+static int g_hidreq_last_ret = 0;
+static UInt32 g_hidreq_last_op = 0;
 
 void VoodooI2CHIDDevice::getInputReport() {
     IOBufferMemoryDescriptor* buffer;
@@ -463,6 +466,38 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
             setProperty("PhxFeatureLastRet", (UInt32)g_feature_last_ret, 32);
             setProperty("PhxFeatureLastId", (UInt32)g_feature_last_id, 32);
             IOLog("%s::%s feature id=%u value=0x%02x ret=0x%x", getName(), name, features[i].id, features[i].value, fr);
+            IOSleep(10);
+        }
+    }
+
+    /* HID class requests: SET_IDLE(0) and SET_PROTOCOL(Report).
+     * Linux issues these from the HID core after the transport is ready;
+     * without them some panels stay in request/response mode and never
+     * raise the data-ready interrupt. */
+    {
+        struct { UInt8 opcode; UInt8 report_type; UInt8 value; } hid_reqs[] = {
+            {0x05, 0x00, 0x00},   /* SET_IDLE: idle rate 0 (indefinite) */
+            {0x07, 0x00, 0x01},   /* SET_PROTOCOL: report protocol */
+        };
+        for (unsigned i = 0; i < sizeof(hid_reqs)/sizeof(hid_reqs[0]); i++) {
+            VoodooI2CHIDDeviceCommand cmd;
+            memset(&cmd, 0, sizeof(cmd));
+            cmd.c.reg = hid_descriptor.wCommandRegister;
+            cmd.c.report_type_id = hid_reqs[i].report_type;
+            cmd.c.opcode = hid_reqs[i].opcode;
+            UInt8 buf[5] = { (UInt8)(hid_descriptor.wCommandRegister & 0xFF),
+                             (UInt8)(hid_descriptor.wCommandRegister >> 8),
+                             hid_reqs[i].report_type,
+                             hid_reqs[i].opcode,
+                             hid_reqs[i].value };
+            IOReturn hr = api->writeI2C(buf, sizeof(buf));
+            g_hidreq_calls++;
+            g_hidreq_last_ret = (int)hr;
+            g_hidreq_last_op = hid_reqs[i].opcode;
+            setProperty("PhxHidReqCalls", g_hidreq_calls, 64);
+            setProperty("PhxHidReqLastRet", (UInt32)g_hidreq_last_ret, 32);
+            setProperty("PhxHidReqLastOp", (UInt32)g_hidreq_last_op, 32);
+            IOLog("%s::%s hid req op=0x%02x val=0x%02x ret=0x%x", getName(), name, hid_reqs[i].opcode, hid_reqs[i].value, hr);
             IOSleep(10);
         }
     }
