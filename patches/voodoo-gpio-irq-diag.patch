@@ -1,5 +1,5 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..894f7d2 100644
+index 9bbc313..28fddf2 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
 @@ -23,12 +23,16 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
@@ -176,7 +176,21 @@ index 9bbc313..894f7d2 100644
              if (OSObject *owner = this->pinInterruptActionOwners[pin])
                  this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
  
-@@ -226,7 +308,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -171,7 +253,12 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+              * by an interrupt storm.
+              */
+             regval = readl((IOVirtualAddress)(regs + i));
+-            if (irq == 0) {
++            /* Linux disables the line only when no irq mapping exists for
++             * that pin. The old irq==0 test was always true because
++             * VoodooGPIOAMD registers the shared source as index 0, so every
++             * pin got INTERRUPT_ENABLE cleared after its first interrupt.
++             */
++            if (!this->pinInterruptActionOwners[pin]) {
+                 regval &= ~BIT(INTERRUPT_ENABLE_OFF);
+                 TryLog("%s::VoodooGPIO: Disabling spurious GPIO IRQ %d\n", this->getName(), irqnr + i);
+             }
+@@ -226,7 +313,60 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -238,7 +252,7 @@ index 9bbc313..894f7d2 100644
  }
  
  /**
-@@ -338,7 +473,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +478,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -252,7 +266,7 @@ index 9bbc313..894f7d2 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +577,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +582,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -268,7 +282,7 @@ index 9bbc313..894f7d2 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +615,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +620,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  

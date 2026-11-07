@@ -303,14 +303,12 @@ IOReturn VoodooI2CControllerDriver::prepareTransferI2C(VoodooI2CControllerBusMes
     }
 
     /*
-     * We must disable the adapter before returning and signalling the end
-     * of the current transfer. Otherwise the hardware might continue
-     * generating interrupts which in turn causes a race condition with
-     * the following transfer.  Needs some more investigation if the
-     * additional interrupts are a hardware bug or this driver doesn't
-     * handle them correctly yet.
+     * Linux i2c-designware keeps the controller enabled between transfers
+     * and only disables it on runtime suspend. Disabling it here closes a
+     * window in which the device can assert its interrupt line (e.g. the
+     * HID-over-I2C reset-complete IRQ) with nothing listening. Keep the
+     * adapter enabled; requestTransferI2C() already re-initialises it.
      */
-    toggleBusState(kVoodooI2CStateOff);
 
     if (bus_device.message_error)
         return kIOReturnError;
