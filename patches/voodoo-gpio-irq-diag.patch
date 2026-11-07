@@ -1,5 +1,5 @@
 diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
-index 9bbc313..5face23 100644
+index 9bbc313..f4a6c59 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.cpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.cpp
 @@ -23,12 +23,16 @@ void VoodooGPIOAMD::amd_gpio_irq_enable(unsigned pin) {
@@ -232,7 +232,23 @@ index 9bbc313..5face23 100644
      /* did not cause wake on resume context for shared IRQ */
      if (irq < 0)
          return false;
-@@ -226,7 +348,82 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+@@ -193,8 +315,14 @@ void VoodooGPIOAMD::amd_gpio_irq_init() {
+     UInt32 pin_reg, mask;
+     int i;
+ 
++    /*
++     * Linux amd_gpio_irq_init() only clears the wake-source enables:
++     *   S0I3(bit13) | S3(bit14), plus S4(bit15) when _AEI exists.
++     * It does NOT touch INTERRUPT_ENABLE(bit11) or INTERRUPT_MASK(bit12)
++     * here; those are owned by the per-pin irq chip callbacks.
++     * Clearing them here as well erased firmware/ACPI interrupt setup.
++     */
+     mask = BIT(WAKE_CNTRL_OFF_S0I3) | BIT(WAKE_CNTRL_OFF_S3) |
+-        BIT(INTERRUPT_MASK_OFF) | BIT(INTERRUPT_ENABLE_OFF) |
+         BIT(WAKE_CNTRL_OFF_S4);
+ 
+     for (i = 0; i < this->npins; i++) {
+@@ -226,7 +354,104 @@ int VoodooGPIOAMD::amd_gpio_resume() {
  }
  
  void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
@@ -313,10 +329,32 @@ index 9bbc313..5face23 100644
 +    setProperty("PhxGpioPin8Changes", (UInt32)this->diagPin8Changes, 32);
 +    setProperty("PhxGpioPin8Last", (UInt32)this->diagPin8Last, 32);
 +    setProperty("PhxGpioPin8Min", (UInt32)this->diagPin8Min, 32);
++
++    /* WAKE_INT_MASTER_REG(0xfc): Linux reads 0xff000000 on this board.
++     * Bits 31:24 are the shared status/EOI area; bits 11:0 are
++     * MaskStsLength and bit12 is MaskStsEn. Publish it read-only so the
++     * macOS value can be compared without touching any other register. */
++    UInt32 master = readl(this->base + WAKE_INT_MASTER_REG);
++    this->diagWakeMaster = master;
++    setProperty("PhxGpioWakeMaster", master, 32);
++    setProperty("PhxGpioWakeMasterMaskStsEn", (UInt32)((master >> 12) & 1), 32);
++    setProperty("PhxGpioWakeMasterMaskStsLen", (UInt32)(master & 0xFFF), 32);
++
++    /* Full pin8 snapshot: debounce timer/unit/control/large plus the
++     * interrupt and wake bits, so the macOS register can be compared
++     * byte-for-byte with Linux's 0x08159B00. */
++    setProperty("PhxGpioPin8DbTmrOut", (UInt32)(pin8 & 0xF), 32);
++    setProperty("PhxGpioPin8DbTmrUnit", (UInt32)((pin8 >> 4) & 1), 32);
++    setProperty("PhxGpioPin8DbCntrl", (UInt32)((pin8 >> 5) & 3), 32);
++    setProperty("PhxGpioPin8DbTmrLarge", (UInt32)((pin8 >> 7) & 1), 32);
++    setProperty("PhxGpioPin8Level", (UInt32)((pin8 >> LEVEL_TRIG_OFF) & 1), 32);
++    setProperty("PhxGpioPin8Active", (UInt32)((pin8 >> ACTIVE_LEVEL_OFF) & 3), 32);
++    setProperty("PhxGpioPin8Drv", (UInt32)((pin8 >> DRV_STRENGTH_SEL_OFF) & 3), 32);
++    setProperty("PhxGpioPin8S4", (UInt32)((pin8 >> WAKE_CNTRL_OFF_S4) & 1), 32);
  }
  
  /**
-@@ -338,7 +535,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
+@@ -338,7 +563,13 @@ IOReturn VoodooGPIOAMD::setInterruptTypeForPin(int pin, int type) {
      if (pin < 0 || pin >= this->npins)
          return kIOReturnNoInterrupt;
  
@@ -330,7 +368,7 @@ index 9bbc313..5face23 100644
      return kIOReturnSuccess;
  }
  
-@@ -436,6 +639,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -436,6 +667,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  
      this->registerService();
  
@@ -346,7 +384,7 @@ index 9bbc313..5face23 100644
      // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
  
  #define kMyNumberOfStates 2
-@@ -465,6 +677,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+@@ -465,6 +705,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
  void VoodooGPIOAMD::stop(IOService *provider) {
      IOLog("%s::VoodooGPIO stop!\n", this->getName());
  
@@ -361,7 +399,7 @@ index 9bbc313..5face23 100644
          if (this->workLoop) {
              this->workLoop->removeEventSource(this->command_gate);
 diff --git a/VoodooGPIO/VoodooGPIOAMD.hpp b/VoodooGPIO/VoodooGPIOAMD.hpp
-index 6a4e8bd..eef425e 100644
+index 6a4e8bd..5dc04fe 100644
 --- a/VoodooGPIO/VoodooGPIOAMD.hpp
 +++ b/VoodooGPIO/VoodooGPIOAMD.hpp
 @@ -10,6 +10,7 @@
@@ -372,7 +410,7 @@ index 6a4e8bd..eef425e 100644
  
  /**
   * struct pingroup - provides information on pingroup
-@@ -1641,6 +1642,40 @@ private:
+@@ -1641,6 +1642,41 @@ private:
      IOInterruptAction *pinInterruptAction = nullptr;
      void **pinInterruptRefcons = nullptr;
  
@@ -409,11 +447,12 @@ index 6a4e8bd..eef425e 100644
 +    volatile UInt32 diagPin8After1ms = 0;
 +    volatile UInt32 diagPin8After10ms = 0;
 +    volatile UInt32 diagPin8After100ms = 0;
++    volatile UInt32 diagWakeMaster = 0;
 +
      void amd_gpio_irq_enable(unsigned pin);
      void amd_gpio_irq_disable(unsigned pin);
      void amd_gpio_irq_mask(unsigned pin);
-@@ -1654,6 +1689,7 @@ private:
+@@ -1654,6 +1690,7 @@ private:
      int amd_gpio_resume();
  
      void InterruptOccurred(void *refCon, IOService *nub, int source);
