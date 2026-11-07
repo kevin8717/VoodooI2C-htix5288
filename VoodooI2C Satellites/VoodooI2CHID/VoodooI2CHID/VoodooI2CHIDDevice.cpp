@@ -132,6 +132,12 @@ static UInt64 g_reset_wait_calls = 0;
 static UInt64 g_reset_timeout_calls = 0;
 static UInt64 g_reset_awake_calls = 0;
 static UInt64 g_post_on_calls = 0;
+static UInt64 g_pm_off_calls = 0;
+static UInt64 g_pm_on_calls = 0;
+static UInt64 g_reset_read_calls = 0;
+static int g_reset_read_ret = 0;
+static int g_reset_read_len = 0;
+static UInt8 g_reset_read_head[8] = {0};
 static int g_pre_on_ret = 0;
 static int g_reset_write_ret = 0;
 static int g_reset_wait_ret = 0;
@@ -357,6 +363,27 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
             setProperty("PhxPostOnCalls", g_post_on_calls, 64);
             IOLog("%s::%s Timeout waiting for device to complete host initiated reset\n", getName(), name);
             reset_timed_out = true;
+
+            /* Decisive diagnostic: after reset timeout, read the input
+             * register once. A non-zero length prefix means the device DID
+             * produce a report and the GPIO path lost it; all-zero means the
+             * device never generated one. */
+            {
+                UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
+                if (rb) {
+                    for (int i = 0; i < hid_descriptor.wMaxInputLength; i++) rb[i] = 0;
+                    IOReturn rr = api->readI2C(rb, hid_descriptor.wMaxInputLength);
+                    g_reset_read_calls++;
+                    g_reset_read_ret = (int)rr;
+                    g_reset_read_len = rb[0] | (rb[1] << 8);
+                    for (int i = 0; i < 8; i++) g_reset_read_head[i] = rb[i];
+                    setProperty("PhxResetReadCalls", g_reset_read_calls, 64);
+                    setProperty("PhxResetReadRet", (UInt32)g_reset_read_ret, 32);
+                    setProperty("PhxResetReadLen", (UInt32)g_reset_read_len, 32);
+                    setProperty("PhxResetReadHead", g_reset_read_head, 8);
+                    IOFree(rb, hid_descriptor.wMaxInputLength);
+                }
+            }
         } else if (sleep == THREAD_AWAKENED) {
             g_reset_awake_calls++;
             setProperty("PhxResetAwakeCalls", g_reset_awake_calls, 64);
@@ -473,6 +500,8 @@ IOReturn VoodooI2CHIDDevice::setPowerState(unsigned long whichState, IOService* 
         return kIOReturnInvalid;
     if (whichState == 0) {
         if (awake) {
+            g_pm_off_calls++;
+            setProperty("PhxPmOffCalls", g_pm_off_calls, 64);
             setHIDPowerState(kVoodooI2CStateOff);
 
             stopInterrupt();
@@ -483,6 +512,8 @@ IOReturn VoodooI2CHIDDevice::setPowerState(unsigned long whichState, IOService* 
     } else {
         if (!awake) {
             awake = true;
+            g_pm_on_calls++;
+            setProperty("PhxPmOnCalls", g_pm_on_calls, 64);
 
             startInterrupt();
 
