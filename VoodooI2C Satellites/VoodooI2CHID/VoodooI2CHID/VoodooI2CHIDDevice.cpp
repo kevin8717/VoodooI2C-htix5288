@@ -517,6 +517,16 @@ void VoodooI2CHIDDevice::probeInputTimer(OSObject* owner, IOTimerEventSource* ti
     if (!awake || !api)
         return;
 
+    /* Arm-only: read 30 times so the device sees an active host, then stop.
+     * If a data-ready interrupt exists, pin8 must go low on its own. */
+    if (g_probe_reads >= 30) {
+        if (timer) {
+            timer->disable();
+            setProperty("PhxProbeStopped", (UInt32)1, 32);
+        }
+        return;
+    }
+
 
 
     UInt8 *rb = (UInt8 *)IOMalloc(hid_descriptor.wMaxInputLength);
