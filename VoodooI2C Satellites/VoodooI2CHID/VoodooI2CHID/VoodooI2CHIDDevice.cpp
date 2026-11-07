@@ -429,33 +429,18 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
     if (reset_timed_out)
         IOLog("%s::%s Reset handshake timed out; continuing anyway\n", getName(), name);
 
-    /* Linux hid-multitouch issues feature reports 5/6/7 during HID open.
-     * Replay them here so the device leaves reset-confirmation state. */
+    /* Single-variable experiment: after the reset handshake, perform one
+     * ordinary input-register read (what Linux's hid_hw_open()/IRQ handler
+     * does) and publish the reply. No Feature reports are replayed here. */
     {
-        struct { UInt8 id; UInt8 value; } features[] = {
-            {7, 0x00}, {5, 0x03}, {6, 0x03},
-            /* Linux hid-multitouch final state: Device Mode=Touchpad(1),
-             * Input Mode=Touchpad(3), Surface Switch=0. */
-            {7, 0x01}, {5, 0x03}, {6, 0x00},
-        };
-        for (unsigned i = 0; i < sizeof(features)/sizeof(features[0]); i++) {
-            UInt8 payload[2] = {features[i].id, features[i].value};
-            IOBufferMemoryDescriptor* report =
-                IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task, 0, sizeof(payload));
-            if (!report)
-                continue;
-            report->writeBytes(0, payload, sizeof(payload));
-            IOReturn fr = setReport(report, kIOHIDReportTypeFeature, features[i].id);
-            report->release();
-            g_feature_calls++;
-            g_feature_last_ret = (int)fr;
-            g_feature_last_id = features[i].id;
-            setProperty("PhxFeatureCalls", g_feature_calls, 64);
-            setProperty("PhxFeatureLastRet", (UInt32)g_feature_last_ret, 32);
-            setProperty("PhxFeatureLastId", (UInt32)g_feature_last_id, 32);
-            IOLog("%s::%s feature id=%u value=0x%02x ret=0x%x", getName(), name, features[i].id, features[i].value, fr);
-            IOSleep(10);
-        }
+        UInt8 rb[32] = {0};
+        IOReturn rr = api->readI2C(rb, sizeof(rb));
+        UInt32 len = rb[0] | (rb[1] << 8);
+        UInt8 head[8] = {0};
+        for (int i = 0; i < 8; i++) head[i] = rb[i];
+        setProperty("PhxOpenReadRet", (UInt32)rr, 32);
+        setProperty("PhxOpenReadLen", len, 32);
+        setProperty("PhxOpenReadHead", head, 8);
     }
 
     return kIOReturnSuccess;
@@ -616,6 +601,10 @@ bool VoodooI2CHIDDevice::handleStart(IOService* provider) {
         goto exit;
     }
 
+    /* HTIX5288 (093A:0005) cannot deliver GPIO interrupts on this platform,
+     * but the device and HID stack work correctly. Linux drives the same
+     * panel through i2c-hid; use its polling fallback so the touchpad is
+     * usable. Other devices keep the normal GPIO interrupt path. */
     interrupt_source = IOInterruptEventSource::interruptEventSource(this, OSMemberFunctionCast(IOInterruptEventAction, this, &VoodooI2CHIDDevice::interruptOccured), api, 0);
     if (interrupt_source) {
         work_loop->addEventSource(interrupt_source);
