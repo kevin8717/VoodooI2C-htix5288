@@ -1,0 +1,140 @@
+diff --git a/VoodooGPIO/VoodooGPIOAMD.cpp b/VoodooGPIO/VoodooGPIOAMD.cpp
+index 9bbc313..0f67b4d 100644
+--- a/VoodooGPIO/VoodooGPIOAMD.cpp
++++ b/VoodooGPIO/VoodooGPIOAMD.cpp
+@@ -123,6 +123,8 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+     UInt32 regval;
+     UInt64 status, mask;
+ 
++    this->diagHandlerEntries++;
++
+     /* Read the wake status */
+     status = readl(this->base + WAKE_INT_STATUS_REG1);
+     status <<= 32;
+@@ -155,6 +157,11 @@ bool VoodooGPIOAMD::do_amd_gpio_irq_handler(int irq) {
+             if (pin >= this->npins)
+                 break;
+ 
++            if (pin == 8) {
++                this->diagPin8Seen++;
++                this->diagPin8Before = regval;
++            }
++
+             if (OSObject *owner = this->pinInterruptActionOwners[pin])
+                 this->pinInterruptAction[pin](owner, this->pinInterruptRefcons[pin], this, pin);
+ 
+@@ -226,7 +233,43 @@ int VoodooGPIOAMD::amd_gpio_resume() {
+ }
+ 
+ void VoodooGPIOAMD::InterruptOccurred(void *refCon, IOService *nub, int source) {
+-    this->do_amd_gpio_irq_handler(source);
++    this->diagIrqCount++;
++    this->diagLastSource = (UInt32)source;
++    this->diagStatus0 = readl(this->base + WAKE_INT_STATUS_REG0);
++    this->diagStatus1 = readl(this->base + WAKE_INT_STATUS_REG1);
++    this->diagPin8Before = readl(this->base + 8 * 4);
++
++    bool ret = this->do_amd_gpio_irq_handler(source);
++
++    this->diagLastRet = ret ? 1 : 0;
++    this->diagPin8After = readl(this->base + 8 * 4);
++}
++
++void VoodooGPIOAMD::diagTimerAction(OSObject *owner, IOTimerEventSource *sender) {
++    if (sender)
++        sender->setTimeoutMS(1000);
++
++    if (!this->base)
++        return;
++
++    UInt32 pin8 = readl(this->base + 8 * 4);
++
++    setProperty("PhxGpioDiagVersion", (UInt32)1, 32);
++    setProperty("PhxGpioIrqCount", (UInt32)this->diagIrqCount, 32);
++    setProperty("PhxGpioHandlerEntries", (UInt32)this->diagHandlerEntries, 32);
++    setProperty("PhxGpioIrqSource", (UInt32)this->diagLastSource, 32);
++    setProperty("PhxGpioIrqRet", (UInt32)this->diagLastRet, 32);
++    setProperty("PhxGpioStatus0", (UInt32)this->diagStatus0, 32);
++    setProperty("PhxGpioStatus1", (UInt32)this->diagStatus1, 32);
++    setProperty("PhxGpioPin8Seen", (UInt32)this->diagPin8Seen, 32);
++    setProperty("PhxGpioPin8Before", (UInt32)this->diagPin8Before, 32);
++    setProperty("PhxGpioPin8After", (UInt32)this->diagPin8After, 32);
++    setProperty("PhxGpioPin8Now", pin8, 32);
++    setProperty("PhxGpioPin8Pend", (UInt32)((pin8 >> INTERRUPT_STS_OFF) & 1), 32);
++    setProperty("PhxGpioPin8Wake", (UInt32)((pin8 >> WAKE_STS_OFF) & 1), 32);
++    setProperty("PhxGpioPin8Sts", (UInt32)((pin8 >> PIN_STS_OFF) & 1), 32);
++    setProperty("PhxGpioPin8En", (UInt32)((pin8 >> INTERRUPT_ENABLE_OFF) & 1), 32);
++    setProperty("PhxGpioPin8Mask", (UInt32)((pin8 >> INTERRUPT_MASK_OFF) & 1), 32);
+ }
+ 
+ /**
+@@ -436,6 +479,15 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+ 
+     this->registerService();
+ 
++    this->diagTimer = IOTimerEventSource::timerEventSource(this, OSMemberFunctionCast(IOTimerEventSource::Action, this, &VoodooGPIOAMD::diagTimerAction));
++    if (this->diagTimer) {
++        if (this->workLoop->addEventSource(this->diagTimer) == kIOReturnSuccess) {
++            this->diagTimer->setTimeoutMS(1000);
++        } else {
++            OSSafeReleaseNULL(this->diagTimer);
++        }
++    }
++
+     // Declare an array of two IOPMPowerState structures (kMyNumberOfStates = 2).
+ 
+ #define kMyNumberOfStates 2
+@@ -465,6 +517,13 @@ bool VoodooGPIOAMD::start(IOService *provider) {
+ void VoodooGPIOAMD::stop(IOService *provider) {
+     IOLog("%s::VoodooGPIO stop!\n", this->getName());
+ 
++    if (this->diagTimer) {
++        this->diagTimer->cancelTimeout();
++        if (this->workLoop)
++            this->workLoop->removeEventSource(this->diagTimer);
++        OSSafeReleaseNULL(this->diagTimer);
++    }
++
+     if (this->command_gate) {
+         if (this->workLoop) {
+             this->workLoop->removeEventSource(this->command_gate);
+diff --git a/VoodooGPIO/VoodooGPIOAMD.hpp b/VoodooGPIO/VoodooGPIOAMD.hpp
+index 6a4e8bd..79edd17 100644
+--- a/VoodooGPIO/VoodooGPIOAMD.hpp
++++ b/VoodooGPIO/VoodooGPIOAMD.hpp
+@@ -10,6 +10,7 @@
+ #ifndef VoodooGPIOAMD_hpp
+ #define VoodooGPIOAMD_hpp
+ #include "VoodooGPIO.hpp"
++#include <IOKit/IOTimerEventSource.h>
+ 
+ /**
+  * struct pingroup - provides information on pingroup
+@@ -1641,6 +1642,19 @@ private:
+     IOInterruptAction *pinInterruptAction = nullptr;
+     void **pinInterruptRefcons = nullptr;
+ 
++    /* Read-only diagnostic state. Updated in interrupt context, published from
++     * the work loop by diagTimerAction(). */
++    IOTimerEventSource *diagTimer = nullptr;
++    volatile UInt32 diagIrqCount = 0;
++    volatile UInt32 diagHandlerEntries = 0;
++    volatile UInt32 diagLastSource = 0xFFFFFFFF;
++    volatile UInt32 diagLastRet = 0xFFFFFFFF;
++    volatile UInt32 diagStatus0 = 0;
++    volatile UInt32 diagStatus1 = 0;
++    volatile UInt32 diagPin8Before = 0;
++    volatile UInt32 diagPin8After = 0;
++    volatile UInt32 diagPin8Seen = 0;
++
+     void amd_gpio_irq_enable(unsigned pin);
+     void amd_gpio_irq_disable(unsigned pin);
+     void amd_gpio_irq_mask(unsigned pin);
+@@ -1654,6 +1668,7 @@ private:
+     int amd_gpio_resume();
+ 
+     void InterruptOccurred(void *refCon, IOService *nub, int source);
++    void diagTimerAction(OSObject *owner, IOTimerEventSource *sender);
+ 
+  public:
+     IOReturn getInterruptType(int pin, int *interruptType) override;

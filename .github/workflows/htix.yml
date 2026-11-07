@@ -19,6 +19,12 @@ jobs:
           repository: acidanthera/MacKernelSDK
           path: MacKernelSDK
 
+      - name: Apply VoodooGPIO diagnostics patch
+        run: |
+          cd Dependencies/VoodooGPIO
+          git apply ../../patches/voodoo-gpio-irq-diag.patch
+          git diff --stat
+
       - name: VoodooInput Bootstrap
         run: |
           src=$(/usr/bin/curl -Lfs https://raw.githubusercontent.com/acidanthera/VoodooInput/master/VoodooInput/Scripts/bootstrap.sh) && eval "$src" && mv VoodooInput Dependencies
