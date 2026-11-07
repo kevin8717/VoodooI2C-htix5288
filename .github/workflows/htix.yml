@@ -45,7 +45,10 @@ jobs:
           cd out && zip -r VoodooI2C-diag.kext.zip VoodooI2C.kext VoodooI2CHID.kext
           shasum -a 256 VoodooI2C-diag.kext.zip
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: VoodooI2C-diag
-          path: out/VoodooI2C-diag.kext.zip
+      - name: Publish to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG=diag-${{ github.run_number }}
+          gh release create "$TAG" --title "$TAG" --notes "diag build" || true
+          gh release upload "$TAG" out/VoodooI2C-diag.kext.zip --clobber
