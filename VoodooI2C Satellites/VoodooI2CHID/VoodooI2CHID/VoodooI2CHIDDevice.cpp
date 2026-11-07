@@ -522,6 +522,27 @@ IOReturn VoodooI2CHIDDevice::resetHIDDeviceGated() {
             r->writeBytes(0, payload, sizeof(payload));
             IOReturn fr = setReport(r, kIOHIDReportTypeFeature, seq[i].id);
             r->release();
+
+            /* Read-only probe: issue a GET_REPORT for the same Feature id
+             * immediately after SET_REPORT and publish the 4-byte reply.
+             * Linux does this for ids 3/4/10; doing it for 5/6/7 tells us
+             * whether the device accepted the SET_REPORT value. */
+            {
+                UInt8 gbuf[4] = {0};
+                UInt8 wbuf[6] = {
+                    (UInt8)(hid_descriptor.wCommandRegister & 0xFF),
+                    (UInt8)(hid_descriptor.wCommandRegister >> 8),
+                    (UInt8)((0x03 << 4) | seq[i].id),
+                    0x02,
+                    (UInt8)(hid_descriptor.wDataRegister & 0xFF),
+                    (UInt8)(hid_descriptor.wDataRegister >> 8),
+                };
+                IOReturn gr = api->writeReadI2C(wbuf, sizeof(wbuf), gbuf, sizeof(gbuf));
+                if (seq[i].id == 5) { setProperty("PhxGetAfter05", gbuf, 4); setProperty("PhxGetAfter05Ret", (UInt32)gr, 32); }
+                if (seq[i].id == 6) { setProperty("PhxGetAfter06", gbuf, 4); setProperty("PhxGetAfter06Ret", (UInt32)gr, 32); }
+                if (seq[i].id == 7) { setProperty("PhxGetAfter07", gbuf, 4); setProperty("PhxGetAfter07Ret", (UInt32)gr, 32); }
+            }
+
             g_feature_calls++;
             g_feature_last_ret = (int)fr;
             g_feature_last_id = seq[i].id;
